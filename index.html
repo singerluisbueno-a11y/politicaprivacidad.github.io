@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Image Editor</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f3f4f6;
+            color: #1f2937;
+        }
+        canvas {
+            width: 100%;
+            height: 100%;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen flex flex-col items-center p-4">
+    <div class="bg-white shadow-xl rounded-2xl p-6 md:p-8 w-full max-w-2xl lg:max-w-4xl mx-auto my-auto">
+        <h1 class="text-3xl md:text-4xl font-bold text-center text-gray-800 mb-6">Editor de Imágenes con IA</h1>
+        <p class="text-center text-gray-600 mb-8">
+            Sube una imagen y usa la IA para retocarla.
+        </p>
+
+        <div class="space-y-6">
+            <!-- Upload section -->
+            <div class="flex flex-col items-center justify-center">
+                <label for="file-upload" class="cursor-pointer bg-blue-600 text-white py-3 px-6 rounded-full font-semibold hover:bg-blue-700 transition-colors duration-300 shadow-lg">
+                    Cargar Imagen
+                </label>
+                <input id="file-upload" type="file" accept="image/*" class="hidden" onchange="handleImageUpload(event)">
+            </div>
+            
+            <!-- Image display and prompt section -->
+            <div id="image-container" class="relative overflow-hidden rounded-xl shadow-inner border border-gray-300 flex items-center justify-center bg-gray-200" style="min-height: 250px;">
+                <canvas id="canvas"></canvas>
+                <div id="no-image" class="absolute inset-0 flex items-center justify-center text-gray-400 text-lg font-medium">
+                    No hay imagen cargada.
+                </div>
+            </div>
+
+            <div class="flex items-center space-x-2">
+                <input id="prompt-input" type="text" placeholder="Escribe tu prompt para retocar la imagen..." class="flex-1 p-3 rounded-full border border-gray-300 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all">
+                <button id="edit-button" class="bg-green-600 text-white p-3 rounded-full font-semibold hover:bg-green-700 transition-colors duration-300 shadow-md">
+                    Retocar
+                </button>
+            </div>
+            
+            <!-- Action buttons section -->
+            <div class="flex justify-center items-center space-x-4 mt-4">
+                <button id="undo-button" class="bg-yellow-500 text-white p-3 rounded-full font-semibold hover:bg-yellow-600 transition-colors duration-300 shadow-md disabled:bg-gray-400" disabled>
+                    Retroceder
+                </button>
+                <button id="download-button" class="bg-purple-600 text-white p-3 rounded-full font-semibold hover:bg-purple-700 transition-colors duration-300 shadow-md disabled:bg-gray-400" disabled>
+                    Descargar
+                </button>
+            </div>
+        </div>
+
+        <!-- Loading and message sections -->
+        <div id="loading-spinner" class="mt-8 hidden flex flex-col items-center space-y-4">
+            <div class="animate-spin rounded-full h-12 w-12 border-4 border-blue-500 border-t-transparent"></div>
+            <p class="text-blue-600 font-semibold">Generando imagen...</p>
+        </div>
+
+        <div id="message-box" class="mt-8 hidden p-4 rounded-lg text-center font-semibold transition-all duration-300"></div>
+
+    </div>
+
+    <script>
+        // La clave de API se configura automáticamente en este entorno, así que la dejamos vacía.
+        const apiKey = ""; 
+        
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const fileUpload = document.getElementById('file-upload');
+        const promptInput = document.getElementById('prompt-input');
+        const editButton = document.getElementById('edit-button');
+        const undoButton = document.getElementById('undo-button');
+        const downloadButton = document.getElementById('download-button');
+        const loadingSpinner = document.getElementById('loading-spinner');
+        const messageBox = document.getElementById('message-box');
+        const noImagePlaceholder = document.getElementById('no-image');
+        
+        let originalImage = null;
+        let previousImage = null;
+
+        /**
+         * Muestra un mensaje en el recuadro de mensajes.
+         * @param {string} message - El texto del mensaje.
+         * @param {string} type - El tipo de mensaje ('success', 'error', 'info').
+         */
+        function showMessage(message, type = 'info') {
+            messageBox.textContent = message;
+            messageBox.className = 'mt-8 p-4 rounded-lg text-center font-semibold transition-all duration-300';
+            if (type === 'success') {
+                messageBox.classList.add('bg-green-100', 'text-green-800');
+            } else if (type === 'error') {
+                messageBox.classList.add('bg-red-100', 'text-red-800');
+            } else {
+                messageBox.classList.add('bg-blue-100', 'text-blue-800');
+            }
+            messageBox.classList.remove('hidden');
+        }
+
+        /** Oculta el recuadro de mensajes. */
+        function hideMessage() {
+            messageBox.classList.add('hidden');
+        }
+
+        /**
+         * Muestra u oculta el spinner de carga y habilita/deshabilita los botones.
+         * @param {boolean} show - Si es true, muestra el spinner. Si es false, lo oculta.
+         */
+        function showLoading(show) {
+            loadingSpinner.classList.toggle('hidden', !show);
+            editButton.disabled = show;
+            undoButton.disabled = show || !previousImage;
+            downloadButton.disabled = show || !originalImage;
+        }
+
+        /**
+         * Dibuja la imagen en el canvas a su resolución completa.
+         * @param {HTMLImageElement} img - La imagen a mostrar en el canvas.
+         */
+        function drawImageOnCanvas(img) {
+            canvas.width = img.naturalWidth;
+            canvas.height = img.naturalHeight;
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        }
+
+        /**
+         * Maneja el evento de carga de una nueva imagen desde el input.
+         * @param {Event} event - El evento de cambio del input de archivo.
+         */
+        function handleImageUpload(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const img = new Image();
+                img.onload = () => {
+                    originalImage = img;
+                    previousImage = null; // Reinicia el historial al cargar una nueva imagen.
+                    drawImageOnCanvas(originalImage);
+                    noImagePlaceholder.classList.add('hidden');
+                    showMessage('Imagen cargada exitosamente.', 'success');
+                    showLoading(false);
+                };
+                img.src = e.target.result;
+            };
+            reader.readAsDataURL(file);
+        }
+
+        /**
+         * Llama a la API de IA para retocar la imagen con un prompt.
+         * @param {string} imageData - La imagen en formato base64.
+         * @param {string} prompt - El prompt de texto para la IA.
+         * @returns {Promise<string|null>} - La URL de la nueva imagen o null si hay un error.
+         */
+        async function fetchImageFromAPI(imageData, prompt) {
+            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image-preview:generateContent?key=${apiKey}`;
+            const payload = {
+                contents: [{
+                    parts: [
+                        { text: prompt },
+                        { inlineData: { mimeType: "image/png", data: imageData } }
+                    ]
+                }],
+                generationConfig: {
+                    responseModalities: ["IMAGE"]
+                }
+            };
+
+            try {
+                // Implementación de reintentos con retroceso exponencial
+                let response = null;
+                const maxRetries = 5;
+                let delay = 1000;
+
+                for (let i = 0; i < maxRetries; i++) {
+                    response = await fetch(apiUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+
+                    if (response.ok) {
+                        break;
+                    }
+                    if (response.status === 429 && i < maxRetries - 1) {
+                        await new Promise(res => setTimeout(res, delay));
+                        delay *= 2;
+                    } else {
+                        break;
+                    }
+                }
+                
+                if (!response.ok) {
+                    const error = await response.json();
+                    console.error('API Error:', error);
+                    let errorMessage = "No se pudo retocar la imagen. Intenta con un prompt diferente.";
+                    if (error.error && error.error.message) {
+                        errorMessage = `Error de la API: ${error.error.message}`;
+                    }
+                    showMessage(errorMessage, 'error');
+                    return null;
+                }
+
+                const responseText = await response.text();
+                if (!responseText) {
+                    showMessage("La respuesta del servidor está vacía. Inténtalo de nuevo.", "error");
+                    return null;
+                }
+
+                let result;
+                try {
+                    result = JSON.parse(responseText);
+                } catch (e) {
+                    console.error('Error al analizar la respuesta JSON de la API:', e);
+                    showMessage("Hubo un error al procesar la respuesta del servidor. Por favor, inténtalo de nuevo.", "error");
+                    return null;
+                }
+
+                const base64Data = result?.candidates?.[0]?.content?.parts?.find(p => p.inlineData)?.inlineData?.data;
+
+                if (!base64Data) {
+                    showMessage("La API no devolvió una imagen válida. Intenta con un prompt diferente.", "error");
+                    return null;
+                }
+                
+                return `data:image/png;base64,${base64Data}`;
+            } catch (error) {
+                console.error("Fetch Error:", error);
+                showMessage("Hubo un error de red. Revisa tu conexión a Internet.", "error");
+                return null;
+            }
+        }
+
+        // Event listener para el botón "Retocar".
+        editButton.addEventListener('click', async () => {
+            if (!originalImage) {
+                showMessage("Por favor, carga una imagen primero.", "error");
+                return;
+            }
+
+            const prompt = promptInput.value.trim();
+            if (prompt === '') {
+                showMessage("Por favor, ingresa un prompt.", "error");
+                return;
+            }
+            
+            showLoading(true);
+            hideMessage();
+
+            try {
+                // Obtiene los datos de la imagen actual del canvas en formato base64.
+                const imageData = canvas.toDataURL('image/png').split(',')[1];
+                const newImageUrl = await fetchImageFromAPI(imageData, prompt);
+
+                if (newImageUrl) {
+                    const newImage = new Image();
+                    newImage.onload = () => {
+                        previousImage = originalImage; // Guarda la imagen actual como la anterior
+                        originalImage = newImage; // Establece la nueva imagen como la original para futuras ediciones
+                        drawImageOnCanvas(originalImage);
+                        showMessage("¡Imagen retocada con éxito!", "success");
+                        showLoading(false);
+                    };
+                    newImage.src = newImageUrl;
+                } else {
+                    showLoading(false);
+                }
+            } catch (error) {
+                showLoading(false);
+                console.error("Error durante el proceso de retoque:", error);
+                showMessage("Hubo un error inesperado al retocar la imagen.", "error");
+            }
+        });
+
+        // Event listener para el botón "Retroceder".
+        undoButton.addEventListener('click', () => {
+            if (previousImage) {
+                const tempImage = originalImage;
+                originalImage = previousImage;
+                previousImage = tempImage; // La imagen actual se convierte en la anterior para el siguiente "deshacer".
+                drawImageOnCanvas(originalImage);
+                showMessage("Se ha deshecho el último cambio.", "info");
+                showLoading(false);
+            }
+        });
+
+        // Event listener para el botón "Descargar".
+        downloadButton.addEventListener('click', () => {
+            if (!originalImage) {
+                showMessage("No hay imagen para descargar.", "error");
+                return;
+            }
+            const link = document.createElement('a');
+            link.download = 'imagen_editada_ai.png';
+            link.href = canvas.toDataURL('image/png');
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            showMessage("Imagen descargada con éxito.", "success");
+        });
+
+    </script>
+</body>
+</html>
